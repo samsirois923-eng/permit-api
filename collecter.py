@@ -1,47 +1,115 @@
+from fastapi import FastAPI, Depends, HTTPException, status, Security, Request
+from fastapi.security.api_key import APIKeyHeader
 import json
-import requests
-from openai import OpenAI 
+import os
+import secrets
+import stripe
 
+app = FastAPI(title="Municipal Permits DaaS API")
 
-client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+stripe.api_key = STRIPE_SECRET_KEY
 
-def fetch_austin_permits():
-    url = "https://data.austintexas.gov/resource/3syk-w9eu.json?$limit=3"
-    response = requests.get(url)
-    return response.json()
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
-def normalize_permit_with_ai(raw_record):
-    prompt = f"""
-    Convert this raw municipal permit record into standardized JSON:
-    - permit_id (string)
-    - source_city (string, "Austin")
-    - source_state (string, "TX")
-    - issue_date (string, YYYY-MM-DD)
-    - permit_type (string)
-    - description (string)
-    - contractor_name (string or null)
-    - address (string)
+VALID_API_KEYS = {
+    "test_key_12345": "Beta User",
+    "permits_secret_999": "Paying Customer"
+}
 
-    Raw Record:
-    {json.dumps(raw_record)}
-
-    Return ONLY raw JSON. No markdown formatting.
-    """
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
+def get_api_key(api_key: str = Security(api_key_header)):
+    if api_key in VALID_API_KEYS:
+        return api_key
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing API Key. Please pass a valid 'X-API-Key' header."
     )
-    return json.loads(response.choices[0].message.content)
 
-    print("Fetching live data from Austin...")
-raw_permits = fetch_austin_permits()
+@app.get("/")
+def root():
+    return {"status": "online", "message": "Municipal Permits DaaS API is live"}
 
-print("Normalizing records with AI...")
-clean_permits = [normalize_permit_with_ai(r) for r in raw_permits]
+@app.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
 
-with open("permits.json", "w") as f:
-    json.dump(clean_permits, f, indent=2)
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {str(e)}")
 
-print("Done! Saved clean permits to permits.json")
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        customer_email = session.get("customer_details", {}).get("email", "Unknown")
+
+        new_key = f"pk_live_{secrets.token_urlsafe(16)}"
+        VALID_API_KEYS[new_key] = customer_email
+
+        print(f"SUCCESS: Generated key '{new_key}' for customer: {customer_email}")
+
+    return {"status": "success"}
+
+@app.get("/permits")
+def get_permits(
+    zip_code: str | None = None,
+    work_type: str | None = None,
+    limit: int = 50,
+    api_key: str = Depends(get_api_key)
+):
+    if not os.path.exists("permits.json"):
+        return {"error": "No permit data found"}
+
+    with open("permits.json", "r") as f:
+        data = json.load(f)
+
+    if zip_code:
+        data = [
+            p for p in data 
+            if zip_code in str(p.get("address", "")) or zip_code == str(p.get("zip_code", ""))
+        ]
+
+    if work_type:
+        data = [
+            p for p in data 
+            if work_type.lower() in str(p.get("work_type", "")).lower()
+        ]
+
+    return {"count": len(data[:limit]), "permits": data[:limit]}
+import os
+import uuid
+import stripe
+from fastapi import FastAPI, Request, HTTPException
+
+app = FastAPI()
+
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+@app.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Triggered when checkout completes successfully
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        
+        # Generate new API key
+        new_api_key = f"sk_live_{uuid.uuid4().hex}"
+        
+        # Log key so you can copy it from Render logs
+        print(f"=== NEW GENERATED API KEY: {new_api_key} ===", flush=True)
+
+    return {"status": "success"}
+    
