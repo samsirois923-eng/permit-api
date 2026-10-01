@@ -112,4 +112,12 @@ async def stripe_webhook(request: Request):
         print(f"=== NEW GENERATED API KEY: {new_api_key} ===", flush=True)
 
     return {"status": "success"}
+    @app.get("/permits")
+def get_permits(limit: int = 50, x_api_key: str = Header(None)):
+@app.get("/permits")
+def get_permits(limit: int = 50, x_api_key: str = Header(None)):
+    if x_api_key != VALID_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return {"permits": [...]}
+        
     
