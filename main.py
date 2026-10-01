@@ -1,9 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Security
+from fastapi import FastAPI, Depends, HTTPException, status, Security, Request
 from fastapi.security.api_key import APIKeyHeader
 import json
 import os
+import secrets
+import stripe
 
 app = FastAPI(title="Municipal Permits DaaS API")
+
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+stripe.api_key = STRIPE_SECRET_KEY
 
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -24,6 +30,29 @@ def get_api_key(api_key: str = Security(api_key_header)):
 @app.get("/")
 def root():
     return {"status": "online", "message": "Municipal Permits DaaS API is live"}
+
+@app.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {str(e)}")
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        customer_email = session.get("customer_details", {}).get("email", "Unknown")
+
+        new_key = f"pk_live_{secrets.token_urlsafe(16)}"
+        VALID_API_KEYS[new_key] = customer_email
+
+        print(f"SUCCESS: Generated key '{new_key}' for customer: {customer_email}")
+
+    return {"status": "success"}
 
 @app.get("/permits")
 def get_permits(
@@ -50,9 +79,17 @@ def get_permits(
             if work_type.lower() in str(p.get("work_type", "")).lower()
         ]
 
-    data = data[:limit]
+    return {"count": len(data[:limit]), "permits": data[:limit]}
+import os
+import uuid
+import stripe
+from fastapi import FastAPI, Request, HTTPException
 
-    return {"count": len(data), "permits": data}@app.post("/webhook/stripe")
+app = FastAPI()
+
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+@app.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
@@ -64,11 +101,15 @@ async def stripe_webhook(request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Triggered when checkout completes successfully
     if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        
+        # Generate new API key
         new_api_key = f"sk_live_{uuid.uuid4().hex}"
+        
+        # Log key so you can copy it from Render logs
         print(f"=== NEW GENERATED API KEY: {new_api_key} ===", flush=True)
 
     return {"status": "success"}
-    
-
     
