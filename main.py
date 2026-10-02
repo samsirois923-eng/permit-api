@@ -1,7 +1,3 @@
-Code in VS Code (main.py)
-Replace everything in main.py with this exact code and save the file (Cmd+S or Ctrl+S):
-
-Python
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.security import APIKeyHeader
 import stripe
