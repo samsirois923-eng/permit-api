@@ -1,9 +1,11 @@
+import os
 import uuid
 from datetime import datetime
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.security import APIKeyHeader
 from sqlalchemy import Column, DateTime, String, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+import stripe
 
 DATABASE_URL = "sqlite:///./keys.db"
 engine = create_engine(
@@ -26,12 +28,25 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI()
 apiKeyHeader = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
 
 @app.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
-    payload = await request.json()
+    payload_bytes = await request.body()
+    sig_header = request.headers.get("stripe-signature")
 
-    # Extract customer email from Stripe event object
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(
+                payload_bytes, sig_header, STRIPE_WEBHOOK_SECRET
+            )
+            payload = event
+        except (ValueError, stripe.error.SignatureVerificationError):
+            raise HTTPException(status_code=400, detail="Invalid signature")
+    else:
+        payload = await request.json()
+
     customer_email = (
         payload.get("data", {})
         .get("object", {})
@@ -65,5 +80,6 @@ def get_permits(limit: int = 50, x_api_key: str = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
     return {"permits": [{"id": 1, "type": "Building", "status": "Approved"}]}
+
 
     
