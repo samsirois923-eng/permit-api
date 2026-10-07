@@ -1,85 +1,28 @@
-import os
-import uuid
-from datetime import datetime
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.security import APIKeyHeader
-from sqlalchemy import Column, DateTime, String, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
-import stripe
-
-DATABASE_URL = "sqlite:///./keys.db"
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-
-class APIKey(Base):
-    __tablename__ = "api_keys"
-
-    key = Column(String, primary_key=True, index=True)
-    customer_email = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI()
-apiKeyHeader = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-
-
-@app.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
-    payload_bytes = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-    if STRIPE_WEBHOOK_SECRET:
-        try:
-            event = stripe.Webhook.construct_event(
-                payload_bytes, sig_header, STRIPE_WEBHOOK_SECRET
-            )
-            payload = event
-        except (ValueError, stripe.error.SignatureVerificationError):
-            raise HTTPException(status_code=400, detail="Invalid signature")
-    else:
-        payload = await request.json()
-
-    customer_email = (
-        payload.get("data", {})
-        .get("object", {})
-        .get("customer_details", {})
-        .get("email")
-        or "unknown@example.com"
+event = stripe.Webhook.construct_event(
+        payload, sig_header, STRIPE_WEBHOOK_SECRET
     )
+except ValueError:
+    raise HTTPException(status_code=400, detail="Invalid payload")
+except stripe.error.SignatureVerificationError:
+    raise HTTPException(status_code=400, detail="Invalid signature")
 
+if event.type == 'checkout.session.completed':
+    session = event.data.object
+    customer_email = session.get('customer_details', {}).get('email') or session.get('customer_email')
+    
+    new_key = f"pk_live_{uuid.uuid4().hex}"
+    
     db = SessionLocal()
-    new_key = f"sk_live_{uuid.uuid4().hex}"
+    try:
+        db_key = APIKey(key=new_key, email=customer_email)
+        db.add(db_key)
+        db.commit()
+        print(f"Generated API Key: {new_key} for {customer_email}")
+    finally:
+        db.close()
 
-    db_key = APIKey(key=new_key, customer_email=customer_email)
-    db.add(db_key)
-    db.commit()
-    db.close()
+return {"status": "success"}
 
-    print(f"=== STORED NEW API KEY FOR {customer_email}: {new_key} ===", flush=True)
-    return {"status": "success", "key": new_key}
-
-
-@app.get("/permits")
-def get_permits(limit: int = 50, x_api_key: str = Header(None)):
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing API Key")
-
-    db = SessionLocal()
-    existing_key = db.query(APIKey).filter(APIKey.key == x_api_key).first()
-    db.close()
-
-    if not existing_key:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-
-    return {"permits": [{"id": 1, "type": "Building", "status": "Approved"}]}
 
 
     
