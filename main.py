@@ -51,9 +51,16 @@ async def stripe_webhook(request: Request):
             print(f"Generated API Key: {new_key} for {customer_email}")
         finally:
             db.close()
+            return {"status": "success"}
 
-    return {"status": "success"}
-    
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+
 
 
 
